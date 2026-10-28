@@ -3,6 +3,10 @@ use clap::Parser;
 use serde_json::{Value, json};
 use std::{env, process};
 
+use crate::tools::tools;
+
+mod tools;
+
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Args {
@@ -39,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             ],
             "model": "anthropic/claude-haiku-4.5",
+            "tools": tools()
         }))
         .await?;
 
