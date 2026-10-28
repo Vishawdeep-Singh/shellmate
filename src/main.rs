@@ -1,9 +1,10 @@
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use serde_json::{Value, json};
+
 use std::{env, process};
 
-use crate::tools::tools;
+use crate::tools::{ToolCall, tools};
 
 mod tools;
 
@@ -53,6 +54,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // TODO: Uncomment the lines below to pass the first stage
     if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
         println!("{}", content);
+    }
+    let tools_calls: Vec<ToolCall> =
+        serde_json::from_value(response["choices"][0]["message"]["tool_calls"].clone())
+            .unwrap_or_default();
+
+    for call in tools_calls {
+        let output = tools::Tool::parse(&call.function)?.run()?;
+        println!("{output}");
     }
 
     Ok(())
