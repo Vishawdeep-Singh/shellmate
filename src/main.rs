@@ -1,7 +1,8 @@
+use anyhow::{Context, Result};
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use std::{env, process};
 
@@ -55,7 +56,7 @@ struct Choice {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<()> {
     let args = Args::parse();
 
     let base_url = env::var("OPENROUTER_BASE_URL")
@@ -89,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .choices
             .into_iter()
             .next()
-            .ok_or("no messages")?
+            .context("no choices in response")?
             .message;
 
         if reply.tool_calls.is_empty() {
