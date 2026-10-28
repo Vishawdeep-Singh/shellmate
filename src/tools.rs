@@ -1,13 +1,17 @@
-use serde::Deserialize;
+use std::fmt::format;
+
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct ToolCall {
     pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
     pub function: FunctionCall,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize, Clone)]
 pub struct FunctionCall {
     pub name: String,
     pub arguments: String,
@@ -33,6 +37,13 @@ impl Tool {
         match self {
             Tool::Read(args) => Ok(std::fs::read_to_string(&args.file_path)?),
         }
+    }
+}
+impl ToolCall {
+    pub fn execute(&self) -> String {
+        Tool::parse(&self.function)
+            .and_then(|tool| tool.run())
+            .unwrap_or_else(|e| format!("error :{e}"))
     }
 }
 

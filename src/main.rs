@@ -1,5 +1,6 @@
 use async_openai::{Client, config::OpenAIConfig};
 use clap::Parser;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use std::{env, process};
@@ -13,6 +14,44 @@ mod tools;
 struct Args {
     #[arg(short = 'p', long)]
     prompt: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(tag = "role", rename_all = "lowercase")]
+enum Message {
+    User {
+        content: String,
+    },
+    Assistant(AssistantMessage),
+    Tool {
+        tool_call_id: String,
+        content: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct AssistantMessage {
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<ToolCall>,
+}
+
+#[derive(Serialize)]
+struct ChatRequest<'a> {
+    model: &'a str,
+    messages: &'a [Message],
+    tools: Value,
+}
+
+#[derive(Deserialize)]
+struct ChatResponse {
+    choices: Vec<Choice>,
+}
+
+#[derive(Deserialize)]
+struct Choice {
+    message: AssistantMessage,
 }
 
 #[tokio::main]
@@ -33,36 +72,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::with_config(config);
 
-    #[allow(unused_variables)]
-    let response: Value = client
-        .chat()
-        .create_byot(json!({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": args.prompt
-                }
-            ],
-            "model": "anthropic/claude-haiku-4.5",
-            "tools": tools()
-        }))
-        .await?;
+    let mut messages = vec![Message::User {
+        content: args.prompt,
+    }];
 
-    // You can use print statements as follows for debugging, they'll be visible when running tests.
-    eprintln!("Logs from your program will appear here!");
+    loop {
+        let response: ChatResponse = client
+            .chat()
+            .create_byot(ChatRequest {
+                model: "anthropic/claude-haiku-4.5",
+                messages: &messages,
+                tools: tools(),
+            })
+            .await?;
+        let reply = response
+            .choices
+            .into_iter()
+            .next()
+            .ok_or("no messages")?
+            .message;
 
-    // TODO: Uncomment the lines below to pass the first stage
-    if let Some(content) = response["choices"][0]["message"]["content"].as_str() {
-        println!("{}", content);
+        if reply.tool_calls.is_empty() {
+            if let Some(content) = &reply.content {
+                println!("{content}");
+            }
+            return Ok(());
+        }
+        let results: Vec<Message> = reply
+            .tool_calls
+            .iter()
+            .map(|call| Message::Tool {
+                tool_call_id: call.id.clone(),
+                content: call.execute(),
+            })
+            .collect();
+        messages.push(Message::Assistant(reply));
+        messages.extend(results);
     }
-    let tools_calls: Vec<ToolCall> =
-        serde_json::from_value(response["choices"][0]["message"]["tool_calls"].clone())
-            .unwrap_or_default();
-
-    for call in tools_calls {
-        let output = tools::Tool::parse(&call.function)?.run()?;
-        println!("{output}");
-    }
-
-    Ok(())
 }
