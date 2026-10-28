@@ -27,9 +27,15 @@ pub struct WriteArgs {
     pub content: String,
 }
 
+#[derive(Deserialize)]
+pub struct BashArgs {
+    pub command: String,
+}
+
 pub enum Tool {
     Read(ReadArgs),
     Write(WriteArgs),
+    Bash(BashArgs),
 }
 
 impl Tool {
@@ -37,6 +43,7 @@ impl Tool {
         match call.name.as_str() {
             "Read" => Ok(Tool::Read(serde_json::from_str(&call.arguments)?)),
             "Write" => Ok(Tool::Write(serde_json::from_str(&call.arguments)?)),
+            "Bash" => Ok(Tool::Bash(serde_json::from_str(&call.arguments)?)),
             other => Err(format!("unknown tool: {other}").into()),
         }
     }
@@ -51,6 +58,19 @@ impl Tool {
                     args.file_path
                 ))
             }
+            Tool::Bash(args) => {
+                let output = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(&args.command)
+                    .output()?;
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                Ok(if stdout.is_empty() {
+                    stderr.to_string()
+                } else {
+                    stdout.to_string()
+                })
+            }
         }
     }
 }
@@ -64,43 +84,59 @@ impl ToolCall {
 
 pub fn tools() -> Value {
     json!([
-        {
+            {
+              "type": "function",
+              "function": {
+                "name": "Read",
+                "description": "Read and return the contents of a file",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "file_path": {
+                      "type": "string",
+                      "description": "The path to the file to read"
+                    }
+                  },
+                  "required": ["file_path"]
+                }
+              }
+            },
+            {
           "type": "function",
           "function": {
-            "name": "Read",
-            "description": "Read and return the contents of a file",
+            "name": "Write",
+            "description": "Write content to a file",
             "parameters": {
               "type": "object",
+              "required": ["file_path", "content"],
               "properties": {
                 "file_path": {
                   "type": "string",
-                  "description": "The path to the file to read"
+                  "description": "The path of the file to write to"
+                },
+                "content": {
+                  "type": "string",
+                  "description": "The content to write to the file"
                 }
-              },
-              "required": ["file_path"]
+              }
             }
           }
-        },
-        {
+        },{
       "type": "function",
       "function": {
-        "name": "Write",
-        "description": "Write content to a file",
+        "name": "Bash",
+        "description": "Execute a shell command",
         "parameters": {
           "type": "object",
-          "required": ["file_path", "content"],
+          "required": ["command"],
           "properties": {
-            "file_path": {
+            "command": {
               "type": "string",
-              "description": "The path of the file to write to"
-            },
-            "content": {
-              "type": "string",
-              "description": "The content to write to the file"
+              "description": "The command to execute"
             }
           }
         }
       }
     }
-        ])
+            ])
 }
