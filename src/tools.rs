@@ -1,4 +1,5 @@
 use anyhow::Result;
+use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -16,18 +17,26 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
-#[derive(Deserialize)]
+/// Read and return the contents of a file
+#[derive(Deserialize, JsonSchema)]
 pub struct ReadArgs {
+    /// The path to the file to read
     pub file_path: String,
 }
-#[derive(Deserialize)]
+
+/// Write content to a file
+#[derive(Deserialize, JsonSchema)]
 pub struct WriteArgs {
+    /// The path of the file to write to
     pub file_path: String,
+    /// The content to write to the file
     pub content: String,
 }
 
-#[derive(Deserialize)]
+/// Execute a shell command
+#[derive(Deserialize, JsonSchema)]
 pub struct BashArgs {
+    /// The command to execute
     pub command: String,
 }
 
@@ -99,63 +108,24 @@ impl ToolCall {
     }
 }
 
+pub fn spec<T: JsonSchema>(name: &str) -> Value {
+    let schema = serde_json::to_value(schema_for!(T)).expect("schema serializes");
+    json!({
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": schema["description"],
+            "parameters":schema
+        }
+    })
+}
+
 pub fn tools() -> Value {
     json!([
-            {
-              "type": "function",
-              "function": {
-                "name": "Read",
-                "description": "Read and return the contents of a file",
-                "parameters": {
-                  "type": "object",
-                  "properties": {
-                    "file_path": {
-                      "type": "string",
-                      "description": "The path to the file to read"
-                    }
-                  },
-                  "required": ["file_path"]
-                }
-              }
-            },
-            {
-          "type": "function",
-          "function": {
-            "name": "Write",
-            "description": "Write content to a file",
-            "parameters": {
-              "type": "object",
-              "required": ["file_path", "content"],
-              "properties": {
-                "file_path": {
-                  "type": "string",
-                  "description": "The path of the file to write to"
-                },
-                "content": {
-                  "type": "string",
-                  "description": "The content to write to the file"
-                }
-              }
-            }
-          }
-        },{
-      "type": "function",
-      "function": {
-        "name": "Bash",
-        "description": "Execute a shell command",
-        "parameters": {
-          "type": "object",
-          "required": ["command"],
-          "properties": {
-            "command": {
-              "type": "string",
-              "description": "The command to execute"
-            }
-          }
-        }
-      }
-    }
-            ])
+        spec::<ReadArgs>("Read"),
+        spec::<WriteArgs>("Write"),
+        spec::<BashArgs>("Bash"),
+    ])
 }
 
 #[cfg(test)]
@@ -350,5 +320,10 @@ mod tests {
         };
 
         assert!(tool_call.execute().starts_with("error"));
+    }
+
+    #[test]
+    fn tool_definitions_snapshot() {
+        insta::assert_json_snapshot!(tools());
     }
 }
