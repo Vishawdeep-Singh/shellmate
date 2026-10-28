@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -31,6 +31,8 @@ pub struct BashArgs {
     pub command: String,
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "name", content = "arguments")]
 pub enum Tool {
     Read(ReadArgs),
     Write(WriteArgs),
@@ -75,13 +77,11 @@ impl Run for BashArgs {
 }
 
 impl Tool {
-    pub fn parse(call: &FunctionCall) -> Result<Self> {
-        match call.name.as_str() {
-            "Read" => Ok(Tool::Read(serde_json::from_str(&call.arguments)?)),
-            "Write" => Ok(Tool::Write(serde_json::from_str(&call.arguments)?)),
-            "Bash" => Ok(Tool::Bash(serde_json::from_str(&call.arguments)?)),
-            other => bail!("unknown tool: {other}"),
-        }
+    pub fn parse(call: &FunctionCall) -> Result<Tool> {
+        let arguments: Value = serde_json::from_str(&call.arguments)?;
+        Ok(serde_json::from_value(
+            json!({ "name": call.name, "arguments": arguments }),
+        )?)
     }
     pub fn run(&self) -> Result<String> {
         match self {
