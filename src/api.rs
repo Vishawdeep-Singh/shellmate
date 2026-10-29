@@ -10,9 +10,17 @@ const MODEL: &str = "anthropic/claude-haiku-4.5";
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
-    User { content: String },
+    User {
+        content: String,
+    },
+    System {
+        content: String,
+    },
     Assistant(AssistantMessage),
-    Tool { tool_call_id: String, content: String },
+    Tool {
+        tool_call_id: String,
+        content: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone)]

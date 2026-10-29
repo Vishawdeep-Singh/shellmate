@@ -1,5 +1,6 @@
 mod agent;
 mod api;
+mod skills;
 mod tools;
 
 use anyhow::Result;
