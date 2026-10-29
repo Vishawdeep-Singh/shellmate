@@ -51,10 +51,5 @@ fn expand_prompt(prompt: String, skills: &[Skill]) -> String {
     let Some(skill) = skills.iter().find(|skill| skill.name() == Some(name)) else {
         return prompt;
     };
-    let args = args.trim();
-    if args.is_empty() {
-        skill.body.clone()
-    } else {
-        format!("{}\n\n{}", skill.body, args)
-    }
+    Skill::substitute_arguments(&skill.body, args.trim())
 }

@@ -1,6 +1,14 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::LazyLock;
+
+use regex::{Captures, Regex};
+
+static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\$(?:ARGUMENTS\[(?P<index>\d+)\]|(?P<all>ARGUMENTS)|(?P<num>\d+))").unwrap()
+});
+
 #[derive(Debug, PartialEq)]
 pub struct Skill {
     pub frontmatter: HashMap<String, String>,
@@ -53,6 +61,33 @@ impl Skill {
             skills.push(Skill::skill_parser(&content));
         }
         skills
+    }
+    pub fn substitute_arguments(body: &str, arguments: &str) -> String {
+        let words: Vec<&str> = arguments.split_whitespace().collect();
+
+        if !PLACEHOLDER.is_match(body) {
+            return if arguments.is_empty() {
+                body.to_string()
+            } else {
+                format!("{body}\n\n{arguments}")
+            };
+        }
+
+        PLACEHOLDER
+            .replace_all(body, |caps: &Captures| {
+                match caps.name("index").or(caps.name("num")) {
+                    Some(number) => number
+                        .as_str()
+                        .parse::<usize>()
+                        .ok()
+                        .and_then(|n| words.get(n))
+                        .copied()
+                        .unwrap_or("")
+                        .to_string(),
+                    None => arguments.to_string(),
+                }
+            })
+            .into_owned()
     }
 }
 
