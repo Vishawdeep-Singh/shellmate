@@ -116,4 +116,133 @@ mod tests {
         assert_eq!(skill.frontmatter["description"], "Runs tests: unit and e2e");
         assert_eq!(skill.body.trim(), "Step one\n---\nStep two");
     }
+
+    // ---------- scan_skills ----------
+
+    // Each test gets its own empty folder, so tests running in parallel never collide.
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("skills-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn scan_skills_missing_folder_returns_no_skills() {
+        let missing = temp_dir("scan-missing").join("skills");
+
+        assert!(Skill::scan_skills(&missing).is_empty());
+    }
+
+    #[test]
+    fn scan_skills_reads_only_folders_with_skill_md() {
+        let dir = temp_dir("scan-mixed");
+        fs::create_dir_all(dir.join("apple")).unwrap();
+        fs::write(
+            dir.join("apple/SKILL.md"),
+            "---\nname: apple\ndescription: Deploys apple\n---\nDeploy it\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join("empty")).unwrap();
+        fs::write(dir.join("notes.txt"), "not a skill").unwrap();
+
+        let skills = Skill::scan_skills(&dir);
+
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].name(), Some("apple"));
+        assert_eq!(skills[0].description(), Some("Deploys apple"));
+        assert_eq!(skills[0].body, "Deploy it");
+    }
+
+    // ---------- substitute_arguments ----------
+
+    #[test]
+    fn no_placeholders_and_no_arguments_returns_body() {
+        assert_eq!(Skill::substitute_arguments("Say hello", ""), "Say hello");
+    }
+
+    #[test]
+    fn no_placeholders_appends_arguments() {
+        assert_eq!(
+            Skill::substitute_arguments("Say hello", "to bob"),
+            "Say hello\n\nto bob"
+        );
+    }
+
+    #[test]
+    fn arguments_placeholder_is_the_whole_text() {
+        assert_eq!(
+            Skill::substitute_arguments("Hi $ARGUMENTS", "alice bob"),
+            "Hi alice bob"
+        );
+    }
+
+    #[test]
+    fn arguments_placeholder_keeps_spacing() {
+        assert_eq!(
+            Skill::substitute_arguments("[$ARGUMENTS]", "alice   bob"),
+            "[alice   bob]"
+        );
+    }
+
+    #[test]
+    fn numbered_placeholders_pick_words() {
+        assert_eq!(
+            Skill::substitute_arguments("$0 and $1", "alice bob"),
+            "alice and bob"
+        );
+    }
+
+    #[test]
+    fn indexed_placeholder_picks_word() {
+        assert_eq!(
+            Skill::substitute_arguments("$ARGUMENTS[1]", "alice bob"),
+            "bob"
+        );
+    }
+
+    #[test]
+    fn placeholder_is_replaced_every_time() {
+        assert_eq!(Skill::substitute_arguments("$0 $0", "alice"), "alice alice");
+    }
+
+    #[test]
+    fn indexed_and_plain_arguments_mix() {
+        assert_eq!(
+            Skill::substitute_arguments("$ARGUMENTS / $ARGUMENTS[0]", "alice bob"),
+            "alice bob / alice"
+        );
+    }
+
+    #[test]
+    fn two_digit_placeholder_is_read_as_one_number() {
+        assert_eq!(
+            Skill::substitute_arguments("$10", "a b c d e f g h i j k"),
+            "k"
+        );
+    }
+
+    #[test]
+    fn missing_argument_becomes_empty() {
+        assert_eq!(Skill::substitute_arguments("[$5]", "alice"), "[]");
+    }
+
+    #[test]
+    fn placeholder_without_arguments_becomes_empty() {
+        assert_eq!(Skill::substitute_arguments("Hi $0!", ""), "Hi !");
+    }
+
+    #[test]
+    fn huge_index_becomes_empty_instead_of_panicking() {
+        assert_eq!(
+            Skill::substitute_arguments("[$99999999999999999999]", "alice"),
+            "[]"
+        );
+    }
+
+    // An argument that looks like a placeholder is inserted as is, never replaced again.
+    #[test]
+    fn inserted_arguments_are_not_substituted_again() {
+        assert_eq!(Skill::substitute_arguments("$0 $1", "$1 x"), "$1 x");
+    }
 }
