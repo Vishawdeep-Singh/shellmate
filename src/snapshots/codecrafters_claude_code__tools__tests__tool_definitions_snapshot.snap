@@ -1,6 +1,6 @@
 ---
 source: src/tools.rs
-expression: tools()
+expression: tool_definitions()
 ---
 [
   {
@@ -19,7 +19,7 @@ expression: tools()
         "required": [
           "file_path"
         ],
-        "title": "ReadArgs",
+        "title": "ReadInput",
         "type": "object"
       }
     },
@@ -46,7 +46,7 @@ expression: tools()
           "file_path",
           "content"
         ],
-        "title": "WriteArgs",
+        "title": "WriteInput",
         "type": "object"
       }
     },
@@ -68,7 +68,7 @@ expression: tools()
         "required": [
           "command"
         ],
-        "title": "BashArgs",
+        "title": "BashInput",
         "type": "object"
       }
     },
@@ -97,7 +97,7 @@ expression: tools()
         "required": [
           "name"
         ],
-        "title": "SkillArgs",
+        "title": "SkillInput",
         "type": "object"
       }
     },

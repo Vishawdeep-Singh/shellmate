@@ -188,7 +188,23 @@ pub fn subagent_tool_definitions() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::skills::Skill;
+    use async_openai::{Client, config::OpenAIConfig};
+    use std::collections::HashMap;
     use std::path::{Path, PathBuf};
+
+    // Read, Write and Bash ignore the context; the client is never used to send anything.
+    fn ctx_with(skills: Vec<Skill>) -> AgentContext {
+        AgentContext {
+            tool_definitions: tool_definitions(),
+            skills,
+            client: Client::with_config(OpenAIConfig::new()),
+        }
+    }
+
+    fn ctx() -> AgentContext {
+        ctx_with(Vec::new())
+    }
 
     // Each test gets its own empty folder, so tests running in parallel never collide.
     fn temp_dir(name: &str) -> PathBuf {
@@ -202,11 +218,12 @@ mod tests {
         path.to_str().unwrap().to_string()
     }
 
-    fn bash(command: &str) -> String {
+    async fn bash(command: &str) -> String {
         ToolInput::Bash(BashInput {
             command: command.to_string(),
         })
-        .run()
+        .dispatch(&ctx())
+        .await
         .unwrap()
     }
 
@@ -219,52 +236,55 @@ mod tests {
 
     // ---------- Read ----------
 
-    #[test]
-    fn read_returns_exact_contents() {
+    #[tokio::test]
+    async fn read_returns_exact_contents() {
         let file = temp_dir("read").join("apple.py");
         std::fs::write(&file, "print('hi')\n\n  indented\n").unwrap();
 
         let output = ToolInput::Read(ReadInput {
             file_path: path_str(&file),
         })
-        .run()
+        .dispatch(&ctx())
+        .await
         .unwrap();
 
         assert_eq!(output, "print('hi')\n\n  indented\n");
     }
 
-    #[test]
-    fn read_missing_file_is_an_error() {
+    #[tokio::test]
+    async fn read_missing_file_is_an_error() {
         let file = temp_dir("read-missing").join("nope.txt");
 
         assert!(
             ToolInput::Read(ReadInput {
                 file_path: path_str(&file)
             })
-            .run()
+            .dispatch(&ctx())
+            .await
             .is_err()
         );
     }
 
     // ---------- Write ----------
 
-    #[test]
-    fn write_creates_new_file() {
+    #[tokio::test]
+    async fn write_creates_new_file() {
         let file = temp_dir("write-new").join("hello.txt");
 
         let output = ToolInput::Write(WriteInput {
             file_path: path_str(&file),
             content: "hi there".to_string(),
         })
-        .run()
+        .dispatch(&ctx())
+        .await
         .unwrap();
 
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "hi there");
         assert!(output.contains("8 bytes"));
     }
 
-    #[test]
-    fn write_overwrites_existing_file() {
+    #[tokio::test]
+    async fn write_overwrites_existing_file() {
         let file = temp_dir("write-overwrite").join("hello.txt");
         std::fs::write(&file, "old contents that are longer").unwrap();
 
@@ -272,21 +292,23 @@ mod tests {
             file_path: path_str(&file),
             content: "new".to_string(),
         })
-        .run()
+        .dispatch(&ctx())
+        .await
         .unwrap();
 
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
     }
 
-    #[test]
-    fn write_creates_missing_parent_dirs() {
+    #[tokio::test]
+    async fn write_creates_missing_parent_dirs() {
         let file = temp_dir("write-nested").join("a/b/c/deep.txt");
 
         ToolInput::Write(WriteInput {
             file_path: path_str(&file),
             content: "deep".to_string(),
         })
-        .run()
+        .dispatch(&ctx())
+        .await
         .unwrap();
 
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "deep");
@@ -294,32 +316,32 @@ mod tests {
 
     // ---------- Bash ----------
 
-    #[test]
-    fn bash_runs_simple_command() {
-        assert_eq!(bash("echo hello"), "hello\n");
+    #[tokio::test]
+    async fn bash_runs_simple_command() {
+        assert_eq!(bash("echo hello").await, "hello\n");
     }
 
-    #[test]
-    fn bash_supports_pipes() {
-        assert_eq!(bash("printf 'b\\na\\n' | sort"), "a\nb\n");
+    #[tokio::test]
+    async fn bash_supports_pipes() {
+        assert_eq!(bash("printf 'b\\na\\n' | sort").await, "a\nb\n");
     }
 
-    #[test]
-    fn bash_includes_stderr() {
-        let output = bash("echo out; echo oops >&2");
+    #[tokio::test]
+    async fn bash_includes_stderr() {
+        let output = bash("echo out; echo oops >&2").await;
 
         assert!(output.contains("out"));
         assert!(output.contains("oops"));
     }
 
-    #[test]
-    fn bash_reports_failure_exit_code() {
-        assert!(bash("exit 3").contains("(exit code: Some(3))"));
+    #[tokio::test]
+    async fn bash_reports_failure_exit_code() {
+        assert!(bash("exit 3").await.contains("(exit code: Some(3))"));
     }
 
-    #[test]
-    fn bash_success_has_no_exit_code() {
-        assert!(!bash("true").contains("exit code"));
+    #[tokio::test]
+    async fn bash_success_has_no_exit_code() {
+        assert!(!bash("true").await.contains("exit code"));
     }
 
     // ---------- parse ----------
@@ -368,20 +390,29 @@ mod tests {
 
     // ---------- execute ----------
 
-    #[test]
-    fn execute_turns_errors_into_text() {
+    #[tokio::test]
+    async fn execute_turns_errors_into_text() {
         let tool_call = ToolCall {
             id: "call_1".to_string(),
             kind: "function".to_string(),
             function: call("Delete", "{}"),
         };
 
-        assert!(tool_call.execute().starts_with("error"));
+        assert!(tool_call.execute(&ctx()).await.starts_with("error"));
     }
 
     // ---------- Skill ----------
-    // `SkillInput::run` reads `.claude/skills` from the working directory, which is the
-    // project root under `cargo test`, so these use the repo's own `apple` skill.
+
+    fn skill(name: &str, body: &str) -> Skill {
+        Skill {
+            frontmatter: HashMap::from([
+                ("name".to_string(), name.to_string()),
+                ("description".to_string(), format!("The {name} skill")),
+            ]),
+            body: body.to_string(),
+            dir: PathBuf::from(format!(".claude/skills/{name}")),
+        }
+    }
 
     fn skill_args(name: &str, arguments: Option<&str>) -> SkillInput {
         SkillInput {
@@ -410,39 +441,55 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn skill_renders_header_and_body() {
-        let output = skill_args("apple", None).run().unwrap();
+    #[tokio::test]
+    async fn skill_renders_header_and_body_with_arguments() {
+        let ctx = ctx_with(vec![skill("apple", "Deploy apple to $ARGUMENTS")]);
 
-        assert!(output.starts_with("Skill: apple (located at .claude/skills/apple)\n\n"));
-        assert!(output.contains("scripts/checksum.sh"));
+        let output = skill_args("apple", Some("4127")).run(&ctx).await.unwrap();
+
+        assert_eq!(
+            output,
+            "Skill: apple (located at .claude/skills/apple)\n\nDeploy apple to 4127"
+        );
     }
 
-    #[test]
-    fn skill_body_without_placeholder_gets_arguments_appended() {
-        let output = skill_args("apple", Some("4127")).run().unwrap();
+    #[tokio::test]
+    async fn skill_without_arguments_leaves_placeholder_empty() {
+        let ctx = ctx_with(vec![skill("apple", "Deploy apple to $ARGUMENTS")]);
 
-        assert!(output.ends_with("\n\n4127"));
+        let output = skill_args("apple", None).run(&ctx).await.unwrap();
+
+        assert!(output.ends_with("\n\nDeploy apple to "));
     }
 
-    #[test]
-    fn unknown_skill_is_an_error_naming_it() {
+    #[tokio::test]
+    async fn skill_body_without_placeholder_gets_arguments_appended() {
+        let ctx = ctx_with(vec![skill("plain", "Say hello")]);
+
+        let output = skill_args("plain", Some("to bob")).run(&ctx).await.unwrap();
+
+        assert!(output.ends_with("\n\nSay hello\n\nto bob"));
+    }
+
+    #[tokio::test]
+    async fn unknown_skill_is_an_error_naming_it() {
         let error = skill_args("definitely-not-a-skill", None)
-            .run()
+            .run(&ctx())
+            .await
             .unwrap_err();
 
         assert!(error.to_string().contains("definitely-not-a-skill"));
     }
 
-    #[test]
-    fn execute_turns_unknown_skill_into_error_text() {
+    #[tokio::test]
+    async fn execute_turns_unknown_skill_into_error_text() {
         let tool_call = ToolCall {
             id: "call_1".to_string(),
             kind: "function".to_string(),
             function: call("Skill", r#"{"name": "definitely-not-a-skill"}"#),
         };
 
-        assert!(tool_call.execute().starts_with("error"));
+        assert!(tool_call.execute(&ctx()).await.starts_with("error"));
     }
 
     #[test]
