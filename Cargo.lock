@@ -214,22 +214,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3e64b0cc0439b12df2fa678eae89a1c56a529fd067a9115f7827f1fffd22b32"
 
 [[package]]
-name = "codecrafters-claude-code"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-openai",
- "clap",
- "futures",
- "insta",
- "regex",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1396,6 +1380,22 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
+]
+
+[[package]]
+name = "shellmate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-openai",
+ "clap",
+ "futures",
+ "insta",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

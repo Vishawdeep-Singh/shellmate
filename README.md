@@ -1,35 +1,43 @@
-[![progress-banner](https://backend.codecrafters.io/progress/claude-code/0a5564b7-1ce1-4ef0-b158-2e94bfa9e6d1)](https://app.codecrafters.io/users/Vishawdeep-Singh?r=2qF)
+# shellmate
 
-This is a starting point for Rust solutions to the
-["Build Your own Claude Code" Challenge](https://codecrafters.io/challenges/claude-code).
+A small AI coding assistant for the terminal, written in Rust. It sends your
+prompt to an LLM through an OpenAI-compatible API, lets the model call tools
+(read files, write files, run shell commands, invoke skills), and loops until
+the model gives a final answer.
 
-Claude Code is an AI coding assistant that uses Large Language Models (LLMs) to
-understand code and perform actions through tool calls. In this challenge,
-you'll build your own Claude Code from scratch by implementing an LLM-powered
-coding assistant.
+## Features
 
-Along the way you'll learn about HTTP RESTful APIs, OpenAI-compatible tool
-calling, agent loop, and how to integrate multiple tools into an AI assistant.
+- **Agent loop** with tool calling: Read, Write, Bash and Skill
+- **Skills** loaded from `.claude/skills/<name>/SKILL.md`, with YAML frontmatter
+  (`name`, `description`) and a body of instructions
+- **Slash commands**: `/name args` expands one or more skills into the prompt,
+  with `$ARGUMENTS`, `$ARGUMENTS[N]` and `$N` placeholders
+- **Forked skills**: a skill with `context: fork` runs in its own subagent, and
+  only its final answer is returned to the main conversation
 
-**Note**: If you're viewing this repo on GitHub, head over to
-[codecrafters.io](https://codecrafters.io) to try the challenge.
+## Setup
 
-# Passing the first stage
-
-The entry point for your `claude-code` implementation is in `src/main.rs`. Study
-and uncomment the relevant code, and submit to pass the first stage:
+Set your API key (OpenRouter by default):
 
 ```sh
-codecrafters submit
+export OPENROUTER_API_KEY=...
+# optional, defaults to https://openrouter.ai/api/v1
+export OPENROUTER_BASE_URL=...
 ```
 
-# Stage 2 & beyond
+## Usage
 
-Note: This section is for stages 2 and beyond.
+```sh
+cargo run --release -- -p "What files are in this directory?"
+cargo run --release -- -p "/apple 4127"
+```
 
-1. Ensure you have `cargo (1.98)` installed locally.
-2. Run `./your_program.sh` to run your program, which is implemented in
-   `src/main.rs`. This command compiles your Rust project, so it might be slow
-   the first time you run it. Subsequent runs will be fast.
-3. Run `codecrafters submit` to submit your solution to CodeCrafters. Test
-   output will be streamed to your terminal.
+## Tests
+
+```sh
+cargo test
+```
+
+Tool definitions are covered by an [insta](https://insta.rs) snapshot. After
+changing a tool's arguments or doc comments, review it with
+`cargo insta review`.
