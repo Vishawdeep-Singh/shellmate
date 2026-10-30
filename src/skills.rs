@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use std::sync::LazyLock;
+use std::{collections::HashMap, path::PathBuf};
 
 use regex::{Captures, Regex};
 
@@ -13,6 +13,7 @@ static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| {
 pub struct Skill {
     pub frontmatter: HashMap<String, String>,
     pub body: String,
+    pub dir: PathBuf,
 }
 
 impl Skill {
@@ -24,7 +25,17 @@ impl Skill {
         self.frontmatter.get("description").map(String::as_str)
     }
 
-    fn skill_parser(skill: &str) -> Skill {
+    pub fn render(&self, arguments: &str) -> String {
+        let name = self.name().unwrap_or("unknown");
+        let body = Skill::substitute_arguments(&self.body, arguments);
+        format!(
+            "Skill: {name} (located at {})\n\n{body}",
+            self.dir.display()
+        )
+    }
+
+    fn skill_parser(skill: &str, path: PathBuf) -> Skill {
+        dbg!(&path);
         let parts: Vec<&str> = skill.splitn(3, "---").collect();
         let frontmatter: HashMap<String, String> = parts[1]
             .lines()
@@ -32,7 +43,11 @@ impl Skill {
             .map(|(key, value)| (key.trim().to_string(), value.trim().to_string()))
             .collect();
         let body = parts[2].trim().to_string();
-        Skill { frontmatter, body }
+        Skill {
+            frontmatter,
+            body,
+            dir: path,
+        }
     }
 
     pub fn scan_skills(path: &Path) -> Vec<Skill> {
@@ -58,7 +73,7 @@ impl Skill {
             }
 
             let content = fs::read_to_string(&skill_file).unwrap();
-            skills.push(Skill::skill_parser(&content));
+            skills.push(Skill::skill_parser(&content, path));
         }
         skills
     }
@@ -99,7 +114,7 @@ mod tests {
     fn skill_parser_reads_frontmatter_and_body() {
         let text = "---\nname: onyx\ndescription: Says one word\n---\nRespond with exactly one word: damson\n";
 
-        let skill = Skill::skill_parser(text);
+        let skill = Skill::skill_parser(text, PathBuf::from(".claude/skills/onyx"));
 
         assert_eq!(skill.frontmatter["name"], "onyx");
         assert_eq!(skill.frontmatter["description"], "Says one word");
@@ -111,7 +126,7 @@ mod tests {
     fn skill_parser_handles_tricky_content() {
         let text = "---\nname: onyx\ndescription: Runs tests: unit and e2e\n---\nStep one\n---\nStep two\n";
 
-        let skill = Skill::skill_parser(text);
+        let skill = Skill::skill_parser(text, PathBuf::from(".claude/skills/onyx"));
 
         assert_eq!(skill.frontmatter["description"], "Runs tests: unit and e2e");
         assert_eq!(skill.body.trim(), "Step one\n---\nStep two");
@@ -244,5 +259,10 @@ mod tests {
     #[test]
     fn inserted_arguments_are_not_substituted_again() {
         assert_eq!(Skill::substitute_arguments("$0 $1", "$1 x"), "$1 x");
+    }
+
+    #[test]
+    fn debug_skill_paths() {
+        dbg!(Skill::scan_skills(Path::new(".claude/skills")));
     }
 }

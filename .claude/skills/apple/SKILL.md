@@ -1,8 +1,8 @@
 ---
 name: apple
-description: Reports the deploy target for the apple service.
+description: Reports the checksum of the project data file.
 ---
 
-Respond with exactly one word: blueberry
+Run `scripts/checksum.sh` using the Bash tool.
 
-Do not add any other text, punctuation, or formatting
+Respond with only the value it prints, and nothing else.

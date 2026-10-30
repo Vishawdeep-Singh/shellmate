@@ -1,5 +1,4 @@
 use anyhow::Result;
-use async_openai::types::chat::ChatCompletionRequestAssistantMessage;
 use async_openai::{Client, config::OpenAIConfig};
 
 use crate::api::{self, Message};
@@ -56,31 +55,34 @@ fn expand_prompt(prompt: String, skills: &[Skill]) -> Vec<String> {
         let (word, rest) = remaining
             .split_once(char::is_whitespace)
             .unwrap_or((remaining, ""));
+        dbg!(remaining, word, rest);
+
         let Some(name) = word.strip_prefix('/') else {
+            dbg!("stop: no slash", word);
             break;
         };
         let Some(skill) = skills.iter().find(|skill| skill.name() == Some(name)) else {
+            dbg!("stop: unknown skill", name);
             break;
         };
         found.push(skill);
         remaining = rest;
     }
+    dbg!(found.len(), remaining);
 
     if found.is_empty() {
         return vec![prompt];
     }
 
     let arguments = remaining.trim();
-    found
-        .iter()
-        .map(|skill| Skill::substitute_arguments(&skill.body, arguments))
-        .collect()
+    found.iter().map(|skill| skill.render(arguments)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::path::PathBuf;
 
     fn skill(name: &str, description: &str, body: &str) -> Skill {
         Skill {
@@ -89,6 +91,7 @@ mod tests {
                 ("description".to_string(), description.to_string()),
             ]),
             body: body.to_string(),
+            dir: PathBuf::from(format!(".claude/skills/{name}")),
         }
     }
 
@@ -241,5 +244,9 @@ mod tests {
                 "Add this exact line to your response: apple-1",
             ]
         );
+    }
+    #[test]
+    fn debug_my_prompt() {
+        dbg!(expand("/apple"));
     }
 }
