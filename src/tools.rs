@@ -1,7 +1,11 @@
-use anyhow::Result;
+use std::{env::args, path::Path};
+
+use anyhow::{Context, Result};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+use crate::skills::{self, Skill};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ToolCall {
@@ -40,12 +44,22 @@ pub struct BashArgs {
     pub command: String,
 }
 
+/// Execute a Skill
+#[derive(Deserialize, JsonSchema)]
+pub struct SkillArgs {
+    /// The name of the skill want to execute
+    pub name: String,
+    /// The optional arguments want to pass to the skill
+    pub arguments: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "name", content = "arguments")]
 pub enum Tool {
     Read(ReadArgs),
     Write(WriteArgs),
     Bash(BashArgs),
+    Skill(SkillArgs),
 }
 
 trait Run {
@@ -85,6 +99,18 @@ impl Run for BashArgs {
     }
 }
 
+impl Run for SkillArgs {
+    fn run(&self) -> Result<String> {
+        let name = self.name.as_str();
+        let available_skills = Skill::scan_skills(Path::new(".claude/skills"));
+        let chosen_skill = available_skills
+            .iter()
+            .find(|skill| Some(name) == skill.name())
+            .with_context(|| format!("Unkown skill name {}", name))?;
+        Ok(chosen_skill.render(&self.arguments.as_deref().unwrap_or("")))
+    }
+}
+
 impl Tool {
     pub fn parse(call: &FunctionCall) -> Result<Tool> {
         let arguments: Value = serde_json::from_str(&call.arguments)?;
@@ -97,6 +123,7 @@ impl Tool {
             Tool::Read(args) => args.run(),
             Tool::Write(args) => args.run(),
             Tool::Bash(args) => args.run(),
+            Tool::Skill(args) => args.run(),
         }
     }
 }
@@ -125,6 +152,7 @@ pub fn tools() -> Value {
         spec::<ReadArgs>("Read"),
         spec::<WriteArgs>("Write"),
         spec::<BashArgs>("Bash"),
+        spec::<SkillArgs>("Skill")
     ])
 }
 
@@ -317,6 +345,70 @@ mod tests {
             id: "call_1".to_string(),
             kind: "function".to_string(),
             function: call("Delete", "{}"),
+        };
+
+        assert!(tool_call.execute().starts_with("error"));
+    }
+
+    // ---------- Skill ----------
+    // `SkillArgs::run` reads `.claude/skills` from the working directory, which is the
+    // project root under `cargo test`, so these use the repo's own `apple` skill.
+
+    fn skill_args(name: &str, arguments: Option<&str>) -> SkillArgs {
+        SkillArgs {
+            name: name.to_string(),
+            arguments: arguments.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn parse_skill_with_arguments() {
+        let tool = Tool::parse(&call("Skill", r#"{"name": "apple", "arguments": "4127"}"#));
+
+        assert!(matches!(
+            tool,
+            Ok(Tool::Skill(args)) if args.name == "apple" && args.arguments.as_deref() == Some("4127")
+        ));
+    }
+
+    #[test]
+    fn parse_skill_without_arguments() {
+        let tool = Tool::parse(&call("Skill", r#"{"name": "apple"}"#));
+
+        assert!(matches!(
+            tool,
+            Ok(Tool::Skill(args)) if args.name == "apple" && args.arguments.is_none()
+        ));
+    }
+
+    #[test]
+    fn skill_renders_header_and_body() {
+        let output = skill_args("apple", None).run().unwrap();
+
+        assert!(output.starts_with("Skill: apple (located at .claude/skills/apple)\n\n"));
+        assert!(output.contains("scripts/checksum.sh"));
+    }
+
+    #[test]
+    fn skill_body_without_placeholder_gets_arguments_appended() {
+        let output = skill_args("apple", Some("4127")).run().unwrap();
+
+        assert!(output.ends_with("\n\n4127"));
+    }
+
+    #[test]
+    fn unknown_skill_is_an_error_naming_it() {
+        let error = skill_args("definitely-not-a-skill", None).run().unwrap_err();
+
+        assert!(error.to_string().contains("definitely-not-a-skill"));
+    }
+
+    #[test]
+    fn execute_turns_unknown_skill_into_error_text() {
+        let tool_call = ToolCall {
+            id: "call_1".to_string(),
+            kind: "function".to_string(),
+            function: call("Skill", r#"{"name": "definitely-not-a-skill"}"#),
         };
 
         assert!(tool_call.execute().starts_with("error"));

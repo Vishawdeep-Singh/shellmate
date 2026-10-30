@@ -73,5 +73,34 @@ expression: tools()
       }
     },
     "type": "function"
+  },
+  {
+    "function": {
+      "description": "Execute a Skill",
+      "name": "Skill",
+      "parameters": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "description": "Execute a Skill",
+        "properties": {
+          "arguments": {
+            "description": "The optional arguments want to pass to the skill",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "description": "The name of the skill want to execute",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "SkillArgs",
+        "type": "object"
+      }
+    },
+    "type": "function"
   }
 ]

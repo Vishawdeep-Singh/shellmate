@@ -44,6 +44,11 @@ fn build_skill_prompt(skills: &[Skill]) -> String {
         };
         prompt.push_str(&format!("- {}: {}\n", name, description));
     }
+
+    prompt.push_str(
+        "\nIf a skill matches the user's request, call the Skill tool with its name \
+     and follow the instructions it returns.\n",
+    );
     prompt
 }
 fn expand_prompt(prompt: String, skills: &[Skill]) -> Vec<String> {
@@ -75,7 +80,10 @@ fn expand_prompt(prompt: String, skills: &[Skill]) -> Vec<String> {
     }
 
     let arguments = remaining.trim();
-    found.iter().map(|skill| skill.render(arguments)).collect()
+    found
+        .iter()
+        .map(|skill| Skill::substitute_arguments(&skill.body, arguments))
+        .collect()
 }
 
 #[cfg(test)]
@@ -114,13 +122,22 @@ mod tests {
         expand_prompt(prompt.to_string(), &fruit_skills())
     }
 
+    // A slash command sends only the filled-in body, without `render`'s header.
+    const APPLE: &str = "Add this exact line to your response: apple-";
+    const GRAPE: &str = "Add this exact line to your response: grape-";
+
+    const SKILL_TOOL_HINT: &str = "\nIf a skill matches the user's request, call the Skill tool \
+        with its name and follow the instructions it returns.\n";
+
     // ---------- build_skill_prompt ----------
 
     #[test]
     fn skill_prompt_lists_name_and_description() {
         assert_eq!(
             build_skill_prompt(&fruit_skills()),
-            "You have access to the following skills:\n\n- apple: Deploys apple\n- grape: Tests grape\n"
+            format!(
+                "You have access to the following skills:\n\n- apple: Deploys apple\n- grape: Tests grape\n{SKILL_TOOL_HINT}"
+            )
         );
     }
 
@@ -131,7 +148,7 @@ mod tests {
 
         assert_eq!(
             build_skill_prompt(&skills),
-            "You have access to the following skills:\n\n- apple: Deploys apple\n"
+            format!("You have access to the following skills:\n\n- apple: Deploys apple\n{SKILL_TOOL_HINT}")
         );
     }
 
@@ -171,18 +188,12 @@ mod tests {
 
     #[test]
     fn single_skill_without_arguments() {
-        assert_eq!(
-            expand("/apple"),
-            vec!["Add this exact line to your response: apple-"]
-        );
+        assert_eq!(expand("/apple"), vec![APPLE]);
     }
 
     #[test]
     fn single_skill_with_arguments() {
-        assert_eq!(
-            expand("/apple 4127"),
-            vec!["Add this exact line to your response: apple-4127"]
-        );
+        assert_eq!(expand("/apple 4127"), vec![format!("{APPLE}4127")]);
     }
 
     #[test]
@@ -201,10 +212,7 @@ mod tests {
     fn consecutive_skills_each_get_the_arguments() {
         assert_eq!(
             expand("/apple /grape 4127"),
-            vec![
-                "Add this exact line to your response: apple-4127",
-                "Add this exact line to your response: grape-4127",
-            ]
+            vec![format!("{APPLE}4127"), format!("{GRAPE}4127")]
         );
     }
 
@@ -212,7 +220,7 @@ mod tests {
     fn skill_after_an_argument_is_not_expanded() {
         assert_eq!(
             expand("/apple 4127 /grape"),
-            vec!["Add this exact line to your response: apple-4127 /grape"]
+            vec![format!("{APPLE}4127 /grape")]
         );
     }
 
@@ -220,7 +228,7 @@ mod tests {
     fn unknown_skill_ends_the_skill_run() {
         assert_eq!(
             expand("/apple /nope 4127"),
-            vec!["Add this exact line to your response: apple-/nope 4127"]
+            vec![format!("{APPLE}/nope 4127")]
         );
     }
 
@@ -228,10 +236,7 @@ mod tests {
     fn extra_whitespace_between_skills_is_ignored() {
         assert_eq!(
             expand("  /apple   /grape\t4127  "),
-            vec![
-                "Add this exact line to your response: apple-4127",
-                "Add this exact line to your response: grape-4127",
-            ]
+            vec![format!("{APPLE}4127"), format!("{GRAPE}4127")]
         );
     }
 
@@ -239,10 +244,7 @@ mod tests {
     fn same_skill_twice_expands_twice() {
         assert_eq!(
             expand("/apple /apple 1"),
-            vec![
-                "Add this exact line to your response: apple-1",
-                "Add this exact line to your response: apple-1",
-            ]
+            vec![format!("{APPLE}1"), format!("{APPLE}1")]
         );
     }
     #[test]
