@@ -1,11 +1,12 @@
-use std::{env::args, path::Path};
-
 use anyhow::{Context, Result};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::skills::{self, Skill};
+use crate::{
+    agent::{AgentContext, agent_loop},
+    api::Message,
+};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ToolCall {
@@ -23,14 +24,14 @@ pub struct FunctionCall {
 
 /// Read and return the contents of a file
 #[derive(Deserialize, JsonSchema)]
-pub struct ReadArgs {
+pub struct ReadInput {
     /// The path to the file to read
     pub file_path: String,
 }
 
 /// Write content to a file
 #[derive(Deserialize, JsonSchema)]
-pub struct WriteArgs {
+pub struct WriteInput {
     /// The path of the file to write to
     pub file_path: String,
     /// The content to write to the file
@@ -39,14 +40,14 @@ pub struct WriteArgs {
 
 /// Execute a shell command
 #[derive(Deserialize, JsonSchema)]
-pub struct BashArgs {
+pub struct BashInput {
     /// The command to execute
     pub command: String,
 }
 
 /// Execute a Skill
 #[derive(Deserialize, JsonSchema)]
-pub struct SkillArgs {
+pub struct SkillInput {
     /// The name of the skill want to execute
     pub name: String,
     /// The optional arguments want to pass to the skill
@@ -55,24 +56,24 @@ pub struct SkillArgs {
 
 #[derive(Deserialize)]
 #[serde(tag = "name", content = "arguments")]
-pub enum Tool {
-    Read(ReadArgs),
-    Write(WriteArgs),
-    Bash(BashArgs),
-    Skill(SkillArgs),
+pub enum ToolInput {
+    Read(ReadInput),
+    Write(WriteInput),
+    Bash(BashInput),
+    Skill(SkillInput),
 }
 
 trait Run {
-    fn run(&self) -> Result<String>;
+    async fn run(&self, ctx: &AgentContext) -> Result<String>;
 }
 
-impl Run for ReadArgs {
-    fn run(&self) -> Result<String> {
+impl Run for ReadInput {
+    async fn run(&self, _ctx: &AgentContext) -> Result<String> {
         Ok(std::fs::read_to_string(&self.file_path)?)
     }
 }
-impl Run for WriteArgs {
-    fn run(&self) -> Result<String> {
+impl Run for WriteInput {
+    async fn run(&self, _ctx: &AgentContext) -> Result<String> {
         if let Some(parent) = std::path::Path::new(&self.file_path).parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -84,8 +85,8 @@ impl Run for WriteArgs {
         ))
     }
 }
-impl Run for BashArgs {
-    fn run(&self) -> Result<String> {
+impl Run for BashInput {
+    async fn run(&self, _ctx: &AgentContext) -> Result<String> {
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(&self.command)
@@ -99,43 +100,63 @@ impl Run for BashArgs {
     }
 }
 
-impl Run for SkillArgs {
-    fn run(&self) -> Result<String> {
+impl Run for SkillInput {
+    async fn run(&self, ctx: &AgentContext) -> Result<String> {
         let name = self.name.as_str();
-        let available_skills = Skill::scan_skills(Path::new(".claude/skills"));
-        let chosen_skill = available_skills
+        let skill = ctx
+            .skills
             .iter()
-            .find(|skill| Some(name) == skill.name())
-            .with_context(|| format!("Unkown skill name {}", name))?;
-        Ok(chosen_skill.render(&self.arguments.as_deref().unwrap_or("")))
+            .find(|skill| skill.name() == Some(name))
+            .with_context(|| format!("unknown skill: {name}"))?;
+        let rendered = skill.render(self.arguments.as_deref().unwrap_or(""));
+
+        if skill.context_fork() != Some("fork") {
+            return Ok(rendered);
+        }
+
+        let sub_ctx = AgentContext {
+            client: ctx.client.clone(),
+            skills: Vec::new(),
+            tool_definitions: subagent_tool_definitions(),
+        };
+        let messages = vec![Message::User { content: rendered }];
+        let answer = Box::pin(agent_loop(messages, &sub_ctx)).await?;
+
+        let answer = answer.unwrap_or_default();
+
+        Ok(format!(
+            "Skill {name} ran in a separate context and returned: {}",
+            answer.trim()
+        ))
     }
 }
-
-impl Tool {
-    pub fn parse(call: &FunctionCall) -> Result<Tool> {
+impl ToolInput {
+    pub fn from_call(call: &FunctionCall) -> Result<ToolInput> {
         let arguments: Value = serde_json::from_str(&call.arguments)?;
         Ok(serde_json::from_value(
             json!({ "name": call.name, "arguments": arguments }),
         )?)
     }
-    pub fn run(&self) -> Result<String> {
+    pub async fn dispatch(&self, ctx: &AgentContext) -> Result<String> {
         match self {
-            Tool::Read(args) => args.run(),
-            Tool::Write(args) => args.run(),
-            Tool::Bash(args) => args.run(),
-            Tool::Skill(args) => args.run(),
+            ToolInput::Read(args) => args.run(ctx).await,
+            ToolInput::Write(args) => args.run(ctx).await,
+            ToolInput::Bash(args) => args.run(ctx).await,
+            ToolInput::Skill(args) => args.run(ctx).await,
         }
     }
 }
 impl ToolCall {
-    pub fn execute(&self) -> String {
-        Tool::parse(&self.function)
-            .and_then(|tool| tool.run())
-            .unwrap_or_else(|e| format!("error: {e:#}"))
+    pub async fn execute(&self, ctx: &AgentContext) -> String {
+        let result = match ToolInput::from_call(&self.function) {
+            Ok(tool) => tool.dispatch(ctx).await,
+            Err(e) => Err(e),
+        };
+        result.unwrap_or_else(|e| format!("error: {e:#}"))
     }
 }
 
-pub fn spec<T: JsonSchema>(name: &str) -> Value {
+pub fn tool_definition<T: JsonSchema>(name: &str) -> Value {
     let schema = serde_json::to_value(schema_for!(T)).expect("schema serializes");
     json!({
         "type": "function",
@@ -147,12 +168,20 @@ pub fn spec<T: JsonSchema>(name: &str) -> Value {
     })
 }
 
-pub fn tools() -> Value {
+pub fn tool_definitions() -> Value {
     json!([
-        spec::<ReadArgs>("Read"),
-        spec::<WriteArgs>("Write"),
-        spec::<BashArgs>("Bash"),
-        spec::<SkillArgs>("Skill")
+        tool_definition::<ReadInput>("Read"),
+        tool_definition::<WriteInput>("Write"),
+        tool_definition::<BashInput>("Bash"),
+        tool_definition::<SkillInput>("Skill")
+    ])
+}
+
+pub fn subagent_tool_definitions() -> Value {
+    json!([
+        tool_definition::<ReadInput>("Read"),
+        tool_definition::<WriteInput>("Write"),
+        tool_definition::<BashInput>("Bash"),
     ])
 }
 
@@ -174,7 +203,7 @@ mod tests {
     }
 
     fn bash(command: &str) -> String {
-        Tool::Bash(BashArgs {
+        ToolInput::Bash(BashInput {
             command: command.to_string(),
         })
         .run()
@@ -195,7 +224,7 @@ mod tests {
         let file = temp_dir("read").join("apple.py");
         std::fs::write(&file, "print('hi')\n\n  indented\n").unwrap();
 
-        let output = Tool::Read(ReadArgs {
+        let output = ToolInput::Read(ReadInput {
             file_path: path_str(&file),
         })
         .run()
@@ -209,7 +238,7 @@ mod tests {
         let file = temp_dir("read-missing").join("nope.txt");
 
         assert!(
-            Tool::Read(ReadArgs {
+            ToolInput::Read(ReadInput {
                 file_path: path_str(&file)
             })
             .run()
@@ -223,7 +252,7 @@ mod tests {
     fn write_creates_new_file() {
         let file = temp_dir("write-new").join("hello.txt");
 
-        let output = Tool::Write(WriteArgs {
+        let output = ToolInput::Write(WriteInput {
             file_path: path_str(&file),
             content: "hi there".to_string(),
         })
@@ -239,7 +268,7 @@ mod tests {
         let file = temp_dir("write-overwrite").join("hello.txt");
         std::fs::write(&file, "old contents that are longer").unwrap();
 
-        Tool::Write(WriteArgs {
+        ToolInput::Write(WriteInput {
             file_path: path_str(&file),
             content: "new".to_string(),
         })
@@ -253,7 +282,7 @@ mod tests {
     fn write_creates_missing_parent_dirs() {
         let file = temp_dir("write-nested").join("a/b/c/deep.txt");
 
-        Tool::Write(WriteArgs {
+        ToolInput::Write(WriteInput {
             file_path: path_str(&file),
             content: "deep".to_string(),
         })
@@ -297,31 +326,31 @@ mod tests {
 
     #[test]
     fn parse_read() {
-        let tool = Tool::parse(&call("Read", r#"{"file_path": "a.txt"}"#));
+        let tool = ToolInput::from_call(&call("Read", r#"{"file_path": "a.txt"}"#));
 
-        assert!(matches!(tool, Ok(Tool::Read(args)) if args.file_path == "a.txt"));
+        assert!(matches!(tool, Ok(ToolInput::Read(args)) if args.file_path == "a.txt"));
     }
 
     #[test]
     fn parse_write() {
-        let tool = Tool::parse(&call("Write", r#"{"file_path": "a.txt", "content": "hi"}"#));
+        let tool = ToolInput::from_call(&call("Write", r#"{"file_path": "a.txt", "content": "hi"}"#));
 
         assert!(matches!(
             tool,
-            Ok(Tool::Write(args)) if args.file_path == "a.txt" && args.content == "hi"
+            Ok(ToolInput::Write(args)) if args.file_path == "a.txt" && args.content == "hi"
         ));
     }
 
     #[test]
     fn parse_bash() {
-        let tool = Tool::parse(&call("Bash", r#"{"command": "ls"}"#));
+        let tool = ToolInput::from_call(&call("Bash", r#"{"command": "ls"}"#));
 
-        assert!(matches!(tool, Ok(Tool::Bash(args)) if args.command == "ls"));
+        assert!(matches!(tool, Ok(ToolInput::Bash(args)) if args.command == "ls"));
     }
 
     #[test]
     fn parse_unknown_tool_is_an_error() {
-        let error = Tool::parse(&call("Delete", "{}"))
+        let error = ToolInput::from_call(&call("Delete", "{}"))
             .err()
             .expect("should fail");
 
@@ -330,7 +359,7 @@ mod tests {
 
     #[test]
     fn parse_missing_field_is_an_error() {
-        let error = Tool::parse(&call("Read", r#"{"path": "a.txt"}"#))
+        let error = ToolInput::from_call(&call("Read", r#"{"path": "a.txt"}"#))
             .err()
             .expect("should fail");
 
@@ -351,11 +380,11 @@ mod tests {
     }
 
     // ---------- Skill ----------
-    // `SkillArgs::run` reads `.claude/skills` from the working directory, which is the
+    // `SkillInput::run` reads `.claude/skills` from the working directory, which is the
     // project root under `cargo test`, so these use the repo's own `apple` skill.
 
-    fn skill_args(name: &str, arguments: Option<&str>) -> SkillArgs {
-        SkillArgs {
+    fn skill_args(name: &str, arguments: Option<&str>) -> SkillInput {
+        SkillInput {
             name: name.to_string(),
             arguments: arguments.map(str::to_string),
         }
@@ -363,21 +392,21 @@ mod tests {
 
     #[test]
     fn parse_skill_with_arguments() {
-        let tool = Tool::parse(&call("Skill", r#"{"name": "apple", "arguments": "4127"}"#));
+        let tool = ToolInput::from_call(&call("Skill", r#"{"name": "apple", "arguments": "4127"}"#));
 
         assert!(matches!(
             tool,
-            Ok(Tool::Skill(args)) if args.name == "apple" && args.arguments.as_deref() == Some("4127")
+            Ok(ToolInput::Skill(args)) if args.name == "apple" && args.arguments.as_deref() == Some("4127")
         ));
     }
 
     #[test]
     fn parse_skill_without_arguments() {
-        let tool = Tool::parse(&call("Skill", r#"{"name": "apple"}"#));
+        let tool = ToolInput::from_call(&call("Skill", r#"{"name": "apple"}"#));
 
         assert!(matches!(
             tool,
-            Ok(Tool::Skill(args)) if args.name == "apple" && args.arguments.is_none()
+            Ok(ToolInput::Skill(args)) if args.name == "apple" && args.arguments.is_none()
         ));
     }
 
@@ -398,7 +427,9 @@ mod tests {
 
     #[test]
     fn unknown_skill_is_an_error_naming_it() {
-        let error = skill_args("definitely-not-a-skill", None).run().unwrap_err();
+        let error = skill_args("definitely-not-a-skill", None)
+            .run()
+            .unwrap_err();
 
         assert!(error.to_string().contains("definitely-not-a-skill"));
     }
@@ -416,6 +447,6 @@ mod tests {
 
     #[test]
     fn tool_definitions_snapshot() {
-        insta::assert_json_snapshot!(tools());
+        insta::assert_json_snapshot!(tool_definitions());
     }
 }

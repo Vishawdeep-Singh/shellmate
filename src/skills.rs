@@ -25,6 +25,10 @@ impl Skill {
         self.frontmatter.get("description").map(String::as_str)
     }
 
+    pub fn context_fork(&self) -> Option<&str> {
+        self.frontmatter.get("context").map(String::as_str)
+    }
+
     pub fn render(&self, arguments: &str) -> String {
         let name = self.name().unwrap_or("unknown");
         let body = Skill::substitute_arguments(&self.body, arguments);

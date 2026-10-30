@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_openai::{Client, config::OpenAIConfig};
+use serde_json::Value;
 
 use crate::api::{self, Message};
 use std::path::Path;
@@ -7,8 +8,13 @@ use std::path::Path;
 use crate::skills::Skill;
 use crate::tools;
 
+pub struct AgentContext {
+    pub tool_definitions: Value,
+    pub skills: Vec<Skill>,
+    pub client: Client<OpenAIConfig>,
+}
 pub async fn run(client: &Client<OpenAIConfig>, prompt: String) -> Result<Option<String>> {
-    let tools = tools::tools();
+    let tool_definitions = tools::tool_definitions();
     let skills = Skill::scan_skills(Path::new(".claude/skills"));
 
     let mut messages = Vec::new();
@@ -23,19 +29,32 @@ pub async fn run(client: &Client<OpenAIConfig>, prompt: String) -> Result<Option
             .into_iter()
             .map(|content| Message::User { content }),
     );
+    let ctx = AgentContext {
+        tool_definitions,
+        skills,
+        client: client.clone(),
+    };
+    agent_loop(messages, &ctx).await
+}
 
+pub async fn agent_loop(mut messages: Vec<Message>, ctx: &AgentContext) -> Result<Option<String>> {
     loop {
-        let reply = api::complete(client, &messages, &tools).await?;
+        let reply = api::complete(&ctx.client, &messages, &ctx.tool_definitions).await?;
 
         if reply.tool_calls.is_empty() {
             return Ok(reply.content);
         }
 
-        let results: Vec<Message> = reply.tool_calls.iter().map(Message::tool_result).collect();
+        let futures = reply
+            .tool_calls
+            .iter()
+            .map(|call| Message::tool_result(call, ctx));
+        let results: Vec<Message> = futures::future::join_all(futures).await;
         messages.push(Message::Assistant(reply));
         messages.extend(results);
     }
 }
+
 fn build_skill_prompt(skills: &[Skill]) -> String {
     let mut prompt = String::from("You have access to the following skills:\n\n");
     for skill in skills {
@@ -148,7 +167,9 @@ mod tests {
 
         assert_eq!(
             build_skill_prompt(&skills),
-            format!("You have access to the following skills:\n\n- apple: Deploys apple\n{SKILL_TOOL_HINT}")
+            format!(
+                "You have access to the following skills:\n\n- apple: Deploys apple\n{SKILL_TOOL_HINT}"
+            )
         );
     }
 

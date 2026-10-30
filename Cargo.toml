@@ -14,6 +14,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 anyhow = "1.0.104"
 schemars = "1.2.3"
 regex = "1.13.1"
+futures = "0.3.34"
 
 [dev-dependencies]
 insta = { version = "1.49.0", features = ["json"] }

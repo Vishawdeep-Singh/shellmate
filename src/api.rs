@@ -3,6 +3,7 @@ use async_openai::{Client, config::OpenAIConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::agent::AgentContext;
 use crate::tools::ToolCall;
 
 const MODEL: &str = "anthropic/claude-haiku-4.5";
@@ -32,10 +33,10 @@ pub struct AssistantMessage {
 }
 
 impl Message {
-    pub fn tool_result(call: &ToolCall) -> Self {
+    pub async fn tool_result(call: &ToolCall, ctx: &AgentContext) -> Self {
         Message::Tool {
             tool_call_id: call.id.clone(),
-            content: call.execute(),
+            content: call.execute(ctx).await,
         }
     }
 }
