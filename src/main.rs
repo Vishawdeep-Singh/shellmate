@@ -1,7 +1,10 @@
 mod agent;
 mod api;
+mod events;
+mod models;
 mod skills;
 mod tools;
+mod tui;
 mod ui;
 
 use anyhow::Result;
@@ -14,6 +17,9 @@ use std::{env, process};
 struct Args {
     #[arg(short = 'p', long)]
     prompt: Option<String>,
+    /// The model to use, like anthropic/claude-sonnet-4.5. In the UI, /model switches it.
+    #[arg(short = 'm', long, default_value = models::DEFAULT_MODEL)]
+    model: String,
 }
 
 #[tokio::main]
@@ -34,10 +40,10 @@ async fn main() -> Result<()> {
     let client = Client::with_config(config);
 
     let Some(prompt) = args.prompt else {
-        return agent::repl(&client).await;
+        return tui::run(&client, args.model).await;
     };
 
-    if let Some(answer) = agent::run(&client, prompt).await? {
+    if let Some(answer) = agent::run(&client, args.model, prompt).await? {
         ui::print_answer(&answer);
     }
     Ok(())

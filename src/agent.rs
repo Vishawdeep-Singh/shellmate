@@ -3,31 +3,37 @@ use async_openai::{Client, config::OpenAIConfig};
 use serde_json::Value;
 
 use crate::api::{self, Message};
-use std::io;
 use std::path::Path;
 
+use crate::events::{AgentEvent, Reporter};
 use crate::skills::Skill;
 use crate::tools;
-use crate::ui::{self, trace};
 
+#[derive(Clone)]
 pub struct AgentContext {
     pub tool_definitions: Value,
     pub skills: Vec<Skill>,
     pub client: Client<OpenAIConfig>,
+    /// The model every request goes to, like `anthropic/claude-haiku-4.5`.
+    pub model: String,
     /// 0 for the main agent, 1 for a subagent started by a forked skill, and so on.
     pub depth: usize,
+    /// Where progress events go: stderr in `-p` mode, the full-screen UI otherwise.
+    pub reporter: Reporter,
 }
 impl AgentContext {
-    fn new(client: &Client<OpenAIConfig>) -> Self {
+    pub fn new(client: &Client<OpenAIConfig>, model: String, reporter: Reporter) -> Self {
         AgentContext {
             tool_definitions: tools::tool_definitions(),
             skills: Skill::scan_skills(Path::new(".claude/skills")),
             client: client.clone(),
+            model,
             depth: 0,
+            reporter,
         }
     }
 
-    fn initial_messages(&self) -> Vec<Message> {
+    pub fn initial_messages(&self) -> Vec<Message> {
         let mut messages = Vec::new();
         if !self.skills.is_empty() {
             messages.push(Message::System {
@@ -37,10 +43,12 @@ impl AgentContext {
         messages
     }
 
-    fn push_prompt(&self, messages: &mut Vec<Message>, prompt: String) {
+    pub fn push_prompt(&self, messages: &mut Vec<Message>, prompt: String) {
         let expanded = expand_prompt(prompt.clone(), &self.skills);
         if expanded != [prompt] {
-            trace::slash_expanded(expanded.len());
+            self.reporter.report(AgentEvent::SlashExpanded {
+                count: expanded.len(),
+            });
         }
         messages.extend(
             expanded
@@ -50,50 +58,20 @@ impl AgentContext {
     }
 }
 
-pub async fn run(client: &Client<OpenAIConfig>, prompt: String) -> Result<Option<String>> {
-    let ctx = AgentContext::new(client);
+pub async fn run(
+    client: &Client<OpenAIConfig>,
+    model: String,
+    prompt: String,
+) -> Result<Option<String>> {
+    let ctx = AgentContext::new(client, model, Reporter::Stderr);
     let mut messages = ctx.initial_messages();
     ctx.push_prompt(&mut messages, prompt);
     agent_loop(&mut messages, &ctx).await
 }
 
-pub async fn repl(client: &Client<OpenAIConfig>) -> Result<()> {
-    let ctx = AgentContext::new(client);
-    let mut messages = ctx.initial_messages();
-    let mut line = String::new();
-
-    ui::banner();
-    loop {
-        ui::prompt()?;
-
-        line.clear();
-        let bytes_read = io::stdin().read_line(&mut line)?;
-        if bytes_read == 0 {
-            println!();
-            break;
-        }
-
-        let input = line.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if input == "exit" {
-            break;
-        }
-
-        ctx.push_prompt(&mut messages, input.to_string());
-        match agent_loop(&mut messages, &ctx).await {
-            Ok(Some(answer)) => ui::print_answer(&answer),
-            Ok(None) => {}
-            Err(err) => ui::error(&err),
-        }
-    }
-    Ok(())
-}
-
 pub async fn agent_loop(messages: &mut Vec<Message>, ctx: &AgentContext) -> Result<Option<String>> {
     loop {
-        let reply = api::complete(&ctx.client, messages, &ctx.tool_definitions).await?;
+        let reply = api::complete(&ctx.client, &ctx.model, messages, &ctx.tool_definitions).await?;
 
         if reply.tool_calls.is_empty() {
             let answer = reply.content.clone();
@@ -102,8 +80,15 @@ pub async fn agent_loop(messages: &mut Vec<Message>, ctx: &AgentContext) -> Resu
         }
 
         // Text the model writes next to its tool calls, like "I'll check the file first".
-        if let Some(text) = reply.content.as_deref() {
-            trace::model_note(ctx.depth, text);
+        if let Some(text) = reply
+            .content
+            .as_deref()
+            .filter(|text| !text.trim().is_empty())
+        {
+            ctx.reporter.report(AgentEvent::ModelNote {
+                depth: ctx.depth,
+                text: text.to_string(),
+            });
         }
 
         let futures = reply

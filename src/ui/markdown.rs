@@ -1,6 +1,6 @@
 //! Renders the model's final answer, which is Markdown, with colours and styles.
 
-use termimad::crossterm::style::Attribute;
+use crossterm::style::Attribute;
 use termimad::{MadSkin, ROUNDED_TABLE_BORDER_CHARS, StyledChar};
 
 use super::paint;
@@ -14,6 +14,12 @@ pub fn print_answer(answer: &str) {
     } else {
         println!("{answer}");
     }
+}
+
+/// The answer as styled text wrapped to `width` columns, with colour codes,
+/// for the full-screen UI to turn into its own widgets.
+pub fn to_ansi(answer: &str, width: u16) -> String {
+    skin().text(answer, Some(width as usize)).to_string()
 }
 
 /// How each piece of Markdown looks. Every line here styles one kind of element.

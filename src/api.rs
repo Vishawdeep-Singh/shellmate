@@ -6,8 +6,6 @@ use serde_json::Value;
 use crate::agent::AgentContext;
 use crate::tools::ToolCall;
 
-const MODEL: &str = "anthropic/claude-haiku-4.5";
-
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
@@ -60,13 +58,14 @@ struct Choice {
 
 pub async fn complete(
     client: &Client<OpenAIConfig>,
+    model: &str,
     messages: &[Message],
     tools: &Value,
 ) -> Result<AssistantMessage> {
     let response: ChatResponse = client
         .chat()
         .create_byot(ChatRequest {
-            model: MODEL,
+            model,
             messages,
             tools,
         })

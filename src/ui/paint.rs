@@ -7,7 +7,7 @@ use std::fmt::Display;
 use std::io::{self, IsTerminal};
 use std::sync::LazyLock;
 
-use termimad::crossterm::style::StyledContent;
+use crossterm::style::StyledContent;
 
 static STDOUT_HAS_COLOR: LazyLock<bool> = LazyLock::new(|| wants_color(io::stdout().is_terminal()));
 static STDERR_HAS_COLOR: LazyLock<bool> = LazyLock::new(|| wants_color(io::stderr().is_terminal()));
@@ -18,11 +18,6 @@ fn wants_color(is_terminal: bool) -> bool {
 
 pub fn stdout_has_color() -> bool {
     *STDOUT_HAS_COLOR
-}
-
-/// Styled text for stdout: coloured in a terminal, plain otherwise.
-pub fn for_stdout<D: Display>(styled: StyledContent<D>) -> String {
-    render(styled, *STDOUT_HAS_COLOR)
 }
 
 /// Styled text for stderr: coloured in a terminal, plain otherwise.

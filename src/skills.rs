@@ -9,7 +9,7 @@ static PLACEHOLDER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\$(?:ARGUMENTS\[(?P<index>\d+)\]|(?P<all>ARGUMENTS)|(?P<num>\d+))").unwrap()
 });
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Skill {
     pub frontmatter: HashMap<String, String>,
     pub body: String,

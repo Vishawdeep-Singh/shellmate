@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use crate::{
     agent::{AgentContext, agent_loop},
     api::Message,
-    ui::trace,
+    events::AgentEvent,
 };
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -91,6 +91,8 @@ impl Run for BashInput {
         let output = std::process::Command::new("sh")
             .arg("-c")
             .arg(&self.command)
+            // No keyboard input: a command that waits for it would otherwise hang the UI.
+            .stdin(std::process::Stdio::null())
             .output()?;
         let mut result = String::from_utf8_lossy(&output.stdout).into_owned();
         result.push_str(&String::from_utf8_lossy(&output.stderr));
@@ -117,11 +119,13 @@ impl Run for SkillInput {
 
         let sub_ctx = AgentContext {
             client: ctx.client.clone(),
+            model: ctx.model.clone(),
             skills: Vec::new(),
             tool_definitions: subagent_tool_definitions(),
             depth: ctx.depth + 1,
+            reporter: ctx.reporter.clone(),
         };
-        trace::fork_started(ctx.depth);
+        ctx.reporter.report(AgentEvent::Forked { depth: ctx.depth });
         let mut messages = vec![Message::User { content: rendered }];
         let answer = Box::pin(agent_loop(&mut messages, &sub_ctx)).await?;
 
@@ -169,30 +173,47 @@ impl ToolInput {
 
 impl ToolCall {
     /// Runs the call and returns the text sent back to the model.
-    /// Progress goes to stderr through `trace`, so stdout only ever holds the final answer.
+    /// Reports when it starts and how it ended, so the user can follow along.
     pub async fn execute(&self, ctx: &AgentContext) -> String {
-        let name = &self.function.name;
+        let tool = self.function.name.clone();
+        let depth = ctx.depth;
 
         let result = match ToolInput::from_call(&self.function) {
-            Ok(tool) => {
-                trace::tool_start(ctx.depth, name, &tool.detail());
-                tool.dispatch(ctx).await
+            Ok(input) => {
+                ctx.reporter.report(AgentEvent::ToolStarted {
+                    depth,
+                    tool: tool.clone(),
+                    detail: input.detail(),
+                });
+                input.dispatch(ctx).await
             }
             Err(e) => {
-                trace::tool_start(ctx.depth, name, "(could not parse its arguments)");
+                ctx.reporter.report(AgentEvent::ToolStarted {
+                    depth,
+                    tool: tool.clone(),
+                    detail: "(could not parse its arguments)".to_string(),
+                });
                 Err(e)
             }
         };
 
         match result {
             Ok(output) => {
-                trace::tool_done(ctx.depth, name, &output);
+                ctx.reporter.report(AgentEvent::ToolFinished {
+                    depth,
+                    tool,
+                    output: output.clone(),
+                });
                 output
             }
             Err(e) => {
-                let output = format!("error: {e:#}");
-                trace::tool_failed(ctx.depth, name, &output);
-                output
+                let error = format!("error: {e:#}");
+                ctx.reporter.report(AgentEvent::ToolFailed {
+                    depth,
+                    tool,
+                    error: error.clone(),
+                });
+                error
             }
         }
     }
@@ -230,6 +251,7 @@ pub fn subagent_tool_definitions() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::Reporter;
     use crate::skills::Skill;
     use async_openai::{Client, config::OpenAIConfig};
     use std::collections::HashMap;
@@ -241,7 +263,9 @@ mod tests {
             tool_definitions: tool_definitions(),
             skills,
             client: Client::with_config(OpenAIConfig::new()),
+            model: "test-model".to_string(),
             depth: 0,
+            reporter: Reporter::Stderr,
         }
     }
 
@@ -537,7 +561,7 @@ mod tests {
         assert!(tool_call.execute(&ctx()).await.starts_with("error"));
     }
 
-    // ---------- trace ----------
+    // ---------- detail ----------
 
     #[test]
     fn detail_is_the_main_argument() {

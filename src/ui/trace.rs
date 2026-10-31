@@ -1,7 +1,7 @@
-//! Live progress lines, printed to stderr while the agent works:
+//! How each `AgentEvent` looks, as a line of coloured pieces:
 //!
 //! ```text
-//! ⚡ /loc expanded inline into 1 skill prompt
+//! ⚡ slash command expanded inline into 1 skill prompt
 //! ✦ I'll count the lines first.
 //! ⏺ Skill loc src rs 3
 //!   ↳ forked subagent
@@ -10,84 +10,119 @@
 //!   ⎿ ✓ Skill  Skill loc ran in a separate context and returned: ...
 //! ```
 //!
-//! `depth` is 0 for the main agent and 1 for a subagent, and sets the indent.
+//! `pieces` decides *what* the line says once. `print` paints it for stderr,
+//! and the full-screen UI paints the same pieces with ratatui.
 
-use termimad::crossterm::style::Stylize;
+use crossterm::style::{Color, Stylize};
 
-use super::paint::for_stderr as paint;
+use super::paint;
 use super::theme::{MUTED, PURPLE, RED, TEXT, YELLOW, tool_color};
+use crate::events::AgentEvent;
 
-/// A tool call is about to run.
-pub fn tool_start(depth: usize, tool: &str, detail: &str) {
-    let color = tool_color(tool);
-    eprintln!(
-        "{}{} {} {}",
-        indent(depth),
-        paint("⏺".with(color)),
-        paint(tool.with(color).bold()),
-        paint(one_line(detail).with(TEXT)),
-    );
+/// A run of text in one style.
+pub struct Piece {
+    pub text: String,
+    pub color: Color,
+    pub bold: bool,
+    pub italic: bool,
 }
 
-/// A tool call finished; `output` is what the model gets back.
-pub fn tool_done(depth: usize, tool: &str, output: &str) {
-    eprintln!(
-        "{}  {} {} {}  {}",
-        indent(depth),
-        paint("⎿".with(MUTED)),
-        paint("✓".with(tool_color(tool)).bold()),
-        paint(tool.with(MUTED)),
-        paint(one_line(output).with(MUTED)),
-    );
-}
+impl Piece {
+    fn new(text: impl Into<String>, color: Color) -> Self {
+        Piece {
+            text: text.into(),
+            color,
+            bold: false,
+            italic: false,
+        }
+    }
 
-/// A tool call failed; the error text is sent back to the model.
-pub fn tool_failed(depth: usize, tool: &str, error: &str) {
-    eprintln!(
-        "{}  {} {} {}  {}",
-        indent(depth),
-        paint("⎿".with(MUTED)),
-        paint("✗".with(RED).bold()),
-        paint(tool.with(RED)),
-        paint(one_line(error).with(RED)),
-    );
-}
+    fn bold(mut self) -> Self {
+        self.bold = true;
+        self
+    }
 
-/// A skill with `context: fork` is starting its own subagent.
-pub fn fork_started(depth: usize) {
-    eprintln!(
-        "{}  {}",
-        indent(depth),
-        paint("↳ forked subagent".with(PURPLE).italic()),
-    );
-}
-
-/// Text the model wrote next to its tool calls, like "Let me check the file first".
-pub fn model_note(depth: usize, text: &str) {
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        eprintln!(
-            "{}{} {}",
-            indent(depth),
-            paint("✦".with(YELLOW)),
-            paint(line.trim().with(MUTED).italic()),
-        );
+    fn italic(mut self) -> Self {
+        self.italic = true;
+        self
     }
 }
 
-/// The user typed slash commands, and they were replaced by the skill bodies.
-pub fn slash_expanded(count: usize) {
-    let plural = if count == 1 { "" } else { "s" };
-    eprintln!(
-        "{} {}",
-        paint("⚡".with(YELLOW)),
-        paint(
-            format!("slash command expanded inline into {count} skill prompt{plural}").with(YELLOW)
-        ),
-    );
+/// Prints the event as one coloured line on stderr.
+pub fn print(event: &AgentEvent) {
+    let line: String = pieces(event).iter().map(paint_piece).collect();
+    eprintln!("{line}");
 }
 
-fn indent(depth: usize) -> String {
-    "    ".repeat(depth)
+fn paint_piece(piece: &Piece) -> String {
+    let mut styled = piece.text.as_str().with(piece.color);
+    if piece.bold {
+        styled = styled.bold();
+    }
+    if piece.italic {
+        styled = styled.italic();
+    }
+    paint::for_stderr(styled)
+}
+
+/// The line for one event, split into styled pieces.
+pub fn pieces(event: &AgentEvent) -> Vec<Piece> {
+    match event {
+        AgentEvent::SlashExpanded { count } => {
+            let plural = if *count == 1 { "" } else { "s" };
+            vec![Piece::new(
+                format!("⚡ slash command expanded inline into {count} skill prompt{plural}"),
+                YELLOW,
+            )]
+        }
+        AgentEvent::ModelNote { depth, text } => vec![
+            indent(*depth),
+            Piece::new("✦ ", YELLOW),
+            Piece::new(join_lines(text), MUTED).italic(),
+        ],
+        AgentEvent::ToolStarted {
+            depth,
+            tool,
+            detail,
+        } => {
+            let color = tool_color(tool);
+            vec![
+                indent(*depth),
+                Piece::new("⏺ ", color),
+                Piece::new(tool, color).bold(),
+                Piece::new(format!(" {}", one_line(detail)), TEXT),
+            ]
+        }
+        AgentEvent::ToolFinished {
+            depth,
+            tool,
+            output,
+        } => vec![
+            indent(*depth),
+            Piece::new("  ⎿ ", MUTED),
+            Piece::new("✓ ", tool_color(tool)).bold(),
+            Piece::new(format!("{tool}  {}", one_line(output)), MUTED),
+        ],
+        AgentEvent::ToolFailed { depth, tool, error } => vec![
+            indent(*depth),
+            Piece::new("  ⎿ ", MUTED),
+            Piece::new("✗ ", RED).bold(),
+            Piece::new(format!("{tool}  {}", one_line(error)), RED),
+        ],
+        AgentEvent::Forked { depth } => vec![
+            indent(*depth),
+            Piece::new("  ↳ forked subagent", PURPLE).italic(),
+        ],
+    }
+}
+
+fn indent(depth: usize) -> Piece {
+    Piece::new("    ".repeat(depth), TEXT)
+}
+
+/// Puts a multi-line note on one line.
+fn join_lines(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The first useful line of `text`, cut to fit on one line, plus how many lines were left out.
@@ -118,6 +153,42 @@ fn one_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn text_of(event: AgentEvent) -> String {
+        pieces(&event).into_iter().map(|piece| piece.text).collect()
+    }
+
+    #[test]
+    fn tool_started_line() {
+        let event = AgentEvent::ToolStarted {
+            depth: 1,
+            tool: "Bash".to_string(),
+            detail: "ls -la".to_string(),
+        };
+
+        assert_eq!(text_of(event), "    ⏺ Bash ls -la");
+    }
+
+    #[test]
+    fn tool_finished_line_shows_a_preview() {
+        let event = AgentEvent::ToolFinished {
+            depth: 0,
+            tool: "Read".to_string(),
+            output: "line one\nline two\n".to_string(),
+        };
+
+        assert_eq!(text_of(event), "  ⎿ ✓ Read  line one (+1 more lines)");
+    }
+
+    #[test]
+    fn model_note_is_joined_onto_one_line() {
+        let event = AgentEvent::ModelNote {
+            depth: 0,
+            text: "Let me check.\n\nThen count.".to_string(),
+        };
+
+        assert_eq!(text_of(event), "✦ Let me check. Then count.");
+    }
 
     #[test]
     fn one_line_keeps_short_text() {
