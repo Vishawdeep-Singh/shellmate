@@ -3,11 +3,12 @@ use async_openai::{Client, config::OpenAIConfig};
 use serde_json::Value;
 
 use crate::api::{self, Message};
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 
 use crate::skills::Skill;
 use crate::tools;
+use crate::ui::{self, trace};
 
 pub struct AgentContext {
     pub tool_definitions: Value,
@@ -26,11 +27,6 @@ impl AgentContext {
         }
     }
 
-    /// Leading spaces for trace lines, so subagent activity is nested under its Skill call.
-    pub fn indent(&self) -> String {
-        "    ".repeat(self.depth)
-    }
-
     fn initial_messages(&self) -> Vec<Message> {
         let mut messages = Vec::new();
         if !self.skills.is_empty() {
@@ -44,10 +40,7 @@ impl AgentContext {
     fn push_prompt(&self, messages: &mut Vec<Message>, prompt: String) {
         let expanded = expand_prompt(prompt.clone(), &self.skills);
         if expanded != [prompt] {
-            eprintln!(
-                "⏺ slash command expanded inline into {} skill prompt(s)",
-                expanded.len()
-            );
+            trace::slash_expanded(expanded.len());
         }
         messages.extend(
             expanded
@@ -69,9 +62,9 @@ pub async fn repl(client: &Client<OpenAIConfig>) -> Result<()> {
     let mut messages = ctx.initial_messages();
     let mut line = String::new();
 
+    ui::banner();
     loop {
-        print!("> ");
-        io::stdout().flush()?;
+        ui::prompt()?;
 
         line.clear();
         let bytes_read = io::stdin().read_line(&mut line)?;
@@ -90,9 +83,9 @@ pub async fn repl(client: &Client<OpenAIConfig>) -> Result<()> {
 
         ctx.push_prompt(&mut messages, input.to_string());
         match agent_loop(&mut messages, &ctx).await {
-            Ok(Some(answer)) => println!("{answer}"),
+            Ok(Some(answer)) => ui::print_answer(&answer),
             Ok(None) => {}
-            Err(err) => eprintln!("error: {err:#}"),
+            Err(err) => ui::error(&err),
         }
     }
     Ok(())
@@ -109,10 +102,8 @@ pub async fn agent_loop(messages: &mut Vec<Message>, ctx: &AgentContext) -> Resu
         }
 
         // Text the model writes next to its tool calls, like "I'll check the file first".
-        if let Some(text) = reply.content.as_deref().map(str::trim) {
-            for line in text.lines() {
-                eprintln!("{}{line}", ctx.indent());
-            }
+        if let Some(text) = reply.content.as_deref() {
+            trace::model_note(ctx.depth, text);
         }
 
         let futures = reply

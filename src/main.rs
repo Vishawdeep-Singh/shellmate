@@ -2,6 +2,7 @@ mod agent;
 mod api;
 mod skills;
 mod tools;
+mod ui;
 
 use anyhow::Result;
 use async_openai::{Client, config::OpenAIConfig};
@@ -37,7 +38,7 @@ async fn main() -> Result<()> {
     };
 
     if let Some(answer) = agent::run(&client, prompt).await? {
-        println!("{answer}");
+        ui::print_answer(&answer);
     }
     Ok(())
 }
