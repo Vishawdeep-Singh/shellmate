@@ -118,7 +118,9 @@ impl Run for SkillInput {
             client: ctx.client.clone(),
             skills: Vec::new(),
             tool_definitions: subagent_tool_definitions(),
+            depth: ctx.depth + 1,
         };
+        eprintln!("{}  ↳ running in a forked subagent", ctx.indent());
         let mut messages = vec![Message::User { content: rendered }];
         let answer = Box::pin(agent_loop(&mut messages, &sub_ctx)).await?;
 
@@ -145,14 +147,74 @@ impl ToolInput {
             ToolInput::Skill(args) => args.run(ctx).await,
         }
     }
+
+    /// What the call does, in one line, for the progress trace.
+    fn summary(&self) -> String {
+        match self {
+            ToolInput::Read(args) => format!("Read {}", args.file_path),
+            ToolInput::Write(args) => {
+                format!("Write {} ({} bytes)", args.file_path, args.content.len())
+            }
+            ToolInput::Bash(args) => format!("Bash {}", args.command),
+            ToolInput::Skill(args) => match args.arguments.as_deref() {
+                Some(arguments) if !arguments.trim().is_empty() => {
+                    format!("Skill {} {arguments}", args.name)
+                }
+                _ => format!("Skill {}", args.name),
+            },
+        }
+    }
 }
+
+/// The first line of `text`, cut to fit on one line, plus how many lines were left out.
+fn one_line(text: &str) -> String {
+    const MAX_CHARS: usize = 100;
+
+    let mut lines = text.trim().lines();
+    let Some(first) = lines.next() else {
+        return "(no output)".to_string();
+    };
+
+    let mut line: String = first.chars().take(MAX_CHARS).collect();
+    if first.chars().count() > MAX_CHARS {
+        line.push('…');
+    }
+    let hidden = lines.count();
+    if hidden > 0 {
+        line.push_str(&format!(" (+{hidden} more lines)"));
+    }
+    line
+}
+
 impl ToolCall {
+    /// Runs the call and returns the text sent back to the model.
+    /// Progress goes to stderr, so stdout only ever holds the final answer.
     pub async fn execute(&self, ctx: &AgentContext) -> String {
+        let indent = ctx.indent();
+        let name = &self.function.name;
+
         let result = match ToolInput::from_call(&self.function) {
-            Ok(tool) => tool.dispatch(ctx).await,
-            Err(e) => Err(e),
+            Ok(tool) => {
+                eprintln!("{indent}⏺ {}", one_line(&tool.summary()));
+                tool.dispatch(ctx).await
+            }
+            Err(e) => {
+                eprintln!("{indent}⏺ {name} (could not parse its arguments)");
+                Err(e)
+            }
         };
-        result.unwrap_or_else(|e| format!("error: {e:#}"))
+
+        match result {
+            Ok(output) => {
+                eprintln!("{indent}  ⎿ {name}: {}", one_line(&output));
+                output
+            }
+            Err(e) => {
+                let output = format!("error: {e:#}");
+                eprintln!("{indent}  ⎿ {name} failed: {}", one_line(&output));
+                output
+            }
+        }
     }
 }
 
@@ -199,6 +261,7 @@ mod tests {
             tool_definitions: tool_definitions(),
             skills,
             client: Client::with_config(OpenAIConfig::new()),
+            depth: 0,
         }
     }
 
@@ -490,6 +553,43 @@ mod tests {
         };
 
         assert!(tool_call.execute(&ctx()).await.starts_with("error"));
+    }
+
+    // ---------- trace ----------
+
+    #[test]
+    fn one_line_keeps_short_text() {
+        assert_eq!(one_line("hello\n"), "hello");
+    }
+
+    #[test]
+    fn one_line_counts_hidden_lines() {
+        assert_eq!(one_line("a\nb\nc"), "a (+2 more lines)");
+    }
+
+    #[test]
+    fn one_line_cuts_long_lines() {
+        let long = "x".repeat(150);
+
+        assert_eq!(one_line(&long), format!("{}…", "x".repeat(100)));
+    }
+
+    #[test]
+    fn one_line_marks_empty_output() {
+        assert_eq!(one_line("  \n"), "(no output)");
+    }
+
+    #[test]
+    fn summary_names_the_tool_and_its_main_argument() {
+        let bash = ToolInput::Bash(BashInput {
+            command: "ls -la".to_string(),
+        });
+        let skill = ToolInput::Skill(skill_args("loc", Some("src rs 3")));
+        let bare_skill = ToolInput::Skill(skill_args("loc", Some("")));
+
+        assert_eq!(bash.summary(), "Bash ls -la");
+        assert_eq!(skill.summary(), "Skill loc src rs 3");
+        assert_eq!(bare_skill.summary(), "Skill loc");
     }
 
     #[test]

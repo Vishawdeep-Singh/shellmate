@@ -13,6 +13,8 @@ pub struct AgentContext {
     pub tool_definitions: Value,
     pub skills: Vec<Skill>,
     pub client: Client<OpenAIConfig>,
+    /// 0 for the main agent, 1 for a subagent started by a forked skill, and so on.
+    pub depth: usize,
 }
 impl AgentContext {
     fn new(client: &Client<OpenAIConfig>) -> Self {
@@ -20,7 +22,13 @@ impl AgentContext {
             tool_definitions: tools::tool_definitions(),
             skills: Skill::scan_skills(Path::new(".claude/skills")),
             client: client.clone(),
+            depth: 0,
         }
+    }
+
+    /// Leading spaces for trace lines, so subagent activity is nested under its Skill call.
+    pub fn indent(&self) -> String {
+        "    ".repeat(self.depth)
     }
 
     fn initial_messages(&self) -> Vec<Message> {
@@ -34,8 +42,15 @@ impl AgentContext {
     }
 
     fn push_prompt(&self, messages: &mut Vec<Message>, prompt: String) {
+        let expanded = expand_prompt(prompt.clone(), &self.skills);
+        if expanded != [prompt] {
+            eprintln!(
+                "⏺ slash command expanded inline into {} skill prompt(s)",
+                expanded.len()
+            );
+        }
         messages.extend(
-            expand_prompt(prompt, &self.skills)
+            expanded
                 .into_iter()
                 .map(|content| Message::User { content }),
         );
@@ -91,6 +106,13 @@ pub async fn agent_loop(messages: &mut Vec<Message>, ctx: &AgentContext) -> Resu
             let answer = reply.content.clone();
             messages.push(Message::Assistant(reply));
             return Ok(answer);
+        }
+
+        // Text the model writes next to its tool calls, like "I'll check the file first".
+        if let Some(text) = reply.content.as_deref().map(str::trim) {
+            for line in text.lines() {
+                eprintln!("{}{line}", ctx.indent());
+            }
         }
 
         let futures = reply
