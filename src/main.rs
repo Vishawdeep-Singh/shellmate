@@ -12,7 +12,7 @@ use std::{env, process};
 #[command(author, version, about)]
 struct Args {
     #[arg(short = 'p', long)]
-    prompt: String,
+    prompt: Option<String>,
 }
 
 #[tokio::main]
@@ -32,7 +32,11 @@ async fn main() -> Result<()> {
         .with_api_key(api_key);
     let client = Client::with_config(config);
 
-    if let Some(answer) = agent::run(&client, args.prompt).await? {
+    let Some(prompt) = args.prompt else {
+        return agent::repl(&client).await;
+    };
+
+    if let Some(answer) = agent::run(&client, prompt).await? {
         println!("{answer}");
     }
     Ok(())

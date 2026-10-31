@@ -119,8 +119,8 @@ impl Run for SkillInput {
             skills: Vec::new(),
             tool_definitions: subagent_tool_definitions(),
         };
-        let messages = vec![Message::User { content: rendered }];
-        let answer = Box::pin(agent_loop(messages, &sub_ctx)).await?;
+        let mut messages = vec![Message::User { content: rendered }];
+        let answer = Box::pin(agent_loop(&mut messages, &sub_ctx)).await?;
 
         let answer = answer.unwrap_or_default();
 

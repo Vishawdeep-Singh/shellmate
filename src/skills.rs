@@ -39,7 +39,6 @@ impl Skill {
     }
 
     fn skill_parser(skill: &str, path: PathBuf) -> Skill {
-        dbg!(&path);
         let parts: Vec<&str> = skill.splitn(3, "---").collect();
         let frontmatter: HashMap<String, String> = parts[1]
             .lines()
@@ -263,10 +262,5 @@ mod tests {
     #[test]
     fn inserted_arguments_are_not_substituted_again() {
         assert_eq!(Skill::substitute_arguments("$0 $1", "$1 x"), "$1 x");
-    }
-
-    #[test]
-    fn debug_skill_paths() {
-        dbg!(Skill::scan_skills(Path::new(".claude/skills")));
     }
 }

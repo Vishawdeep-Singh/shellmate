@@ -3,6 +3,7 @@ use async_openai::{Client, config::OpenAIConfig};
 use serde_json::Value;
 
 use crate::api::{self, Message};
+use std::io::{self, Write};
 use std::path::Path;
 
 use crate::skills::Skill;
@@ -13,36 +14,83 @@ pub struct AgentContext {
     pub skills: Vec<Skill>,
     pub client: Client<OpenAIConfig>,
 }
-pub async fn run(client: &Client<OpenAIConfig>, prompt: String) -> Result<Option<String>> {
-    let tool_definitions = tools::tool_definitions();
-    let skills = Skill::scan_skills(Path::new(".claude/skills"));
-
-    let mut messages = Vec::new();
-    if !skills.is_empty() {
-        messages.push(Message::System {
-            content: build_skill_prompt(&skills),
-        });
+impl AgentContext {
+    fn new(client: &Client<OpenAIConfig>) -> Self {
+        AgentContext {
+            tool_definitions: tools::tool_definitions(),
+            skills: Skill::scan_skills(Path::new(".claude/skills")),
+            client: client.clone(),
+        }
     }
 
-    messages.extend(
-        expand_prompt(prompt, &skills)
-            .into_iter()
-            .map(|content| Message::User { content }),
-    );
-    let ctx = AgentContext {
-        tool_definitions,
-        skills,
-        client: client.clone(),
-    };
-    agent_loop(messages, &ctx).await
+    fn initial_messages(&self) -> Vec<Message> {
+        let mut messages = Vec::new();
+        if !self.skills.is_empty() {
+            messages.push(Message::System {
+                content: build_skill_prompt(&self.skills),
+            });
+        }
+        messages
+    }
+
+    fn push_prompt(&self, messages: &mut Vec<Message>, prompt: String) {
+        messages.extend(
+            expand_prompt(prompt, &self.skills)
+                .into_iter()
+                .map(|content| Message::User { content }),
+        );
+    }
 }
 
-pub async fn agent_loop(mut messages: Vec<Message>, ctx: &AgentContext) -> Result<Option<String>> {
+pub async fn run(client: &Client<OpenAIConfig>, prompt: String) -> Result<Option<String>> {
+    let ctx = AgentContext::new(client);
+    let mut messages = ctx.initial_messages();
+    ctx.push_prompt(&mut messages, prompt);
+    agent_loop(&mut messages, &ctx).await
+}
+
+pub async fn repl(client: &Client<OpenAIConfig>) -> Result<()> {
+    let ctx = AgentContext::new(client);
+    let mut messages = ctx.initial_messages();
+    let mut line = String::new();
+
     loop {
-        let reply = api::complete(&ctx.client, &messages, &ctx.tool_definitions).await?;
+        print!("> ");
+        io::stdout().flush()?;
+
+        line.clear();
+        let bytes_read = io::stdin().read_line(&mut line)?;
+        if bytes_read == 0 {
+            println!();
+            break;
+        }
+
+        let input = line.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if input == "exit" {
+            break;
+        }
+
+        ctx.push_prompt(&mut messages, input.to_string());
+        match agent_loop(&mut messages, &ctx).await {
+            Ok(Some(answer)) => println!("{answer}"),
+            Ok(None) => {}
+            Err(err) => eprintln!("error: {err:#}"),
+        }
+    }
+    Ok(())
+}
+
+pub async fn agent_loop(messages: &mut Vec<Message>, ctx: &AgentContext) -> Result<Option<String>> {
+    loop {
+        let reply = api::complete(&ctx.client, messages, &ctx.tool_definitions).await?;
 
         if reply.tool_calls.is_empty() {
-            return Ok(reply.content);
+            let answer = reply.content.clone();
+            messages.push(Message::Assistant(reply));
+            return Ok(answer);
         }
 
         let futures = reply
@@ -79,20 +127,16 @@ fn expand_prompt(prompt: String, skills: &[Skill]) -> Vec<String> {
         let (word, rest) = remaining
             .split_once(char::is_whitespace)
             .unwrap_or((remaining, ""));
-        dbg!(remaining, word, rest);
 
         let Some(name) = word.strip_prefix('/') else {
-            dbg!("stop: no slash", word);
             break;
         };
         let Some(skill) = skills.iter().find(|skill| skill.name() == Some(name)) else {
-            dbg!("stop: unknown skill", name);
             break;
         };
         found.push(skill);
         remaining = rest;
     }
-    dbg!(found.len(), remaining);
 
     if found.is_empty() {
         return vec![prompt];
@@ -267,9 +311,5 @@ mod tests {
             expand("/apple /apple 1"),
             vec![format!("{APPLE}1"), format!("{APPLE}1")]
         );
-    }
-    #[test]
-    fn debug_my_prompt() {
-        dbg!(expand("/apple"));
     }
 }
